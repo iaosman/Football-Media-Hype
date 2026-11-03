@@ -87,6 +87,18 @@ if "minutes" in panel.columns:
     panel = panel[panel["minutes"] >= 500]
     print(f"After >=500 min filter: {len(panel):,} player-seasons")
 
+# ── LAGGED HYPE (Level 1 elevation) ──────────────────────────────────────────
+# Temporal ordering fix: prior-season hype predicts THIS season's performance.
+# This breaks reverse causality — a player can't inflate last season's hype
+# by performing well this season.
+panel = panel.sort_values(["player", "season"])
+panel["hype_lag1"] = panel.groupby("player")["hype_index_mean"].shift(1)
+panel["hype_lag1_x_british"] = panel["hype_lag1"] * panel["british"].fillna(0)
+
+n_lag = panel["hype_lag1"].notna().sum()
+print(f"\nLagged hype coverage: {n_lag}/{len(panel)} player-seasons have hype_lag1")
+print("(First observed season per player will be NaN — expected)")
+
 panel.to_csv("data/processed/panel_final.csv", index=False)
 print(f"\nSaved: data/processed/panel_final.csv | Shape: {panel.shape}")
 cols = [c for c in ["player","season","minutes","goals_per90","assists_per90","hype_index_mean","british"] if c in panel.columns]

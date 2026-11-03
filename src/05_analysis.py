@@ -2,9 +2,12 @@
 Phase 5: Panel fixed effects regression + event study.
 
 Models:
-  1. OLS with player + season fixed effects (via dummies or within-transform)
-  2. Key coefficient: hype_index_mean × british (interaction)
-  3. Outcome: goals_assists_per90 (primary), xg_per90 (secondary)
+  V1 — Contemporaneous: hype_index_mean (baseline, likely reverse-causal)
+  V2 — Lagged:          hype_lag1 (prior-season hype → this-season performance)
+                        Fixes temporal ordering; preferred causal interpretation.
+
+  Both models: OLS with player + season fixed effects, british interaction term.
+  Outcome: ga_per90 (goals + assists per 90 minutes).
 
 Event study:
   - Define hype spike: player-season where hype_index_peak > player's 75th percentile
@@ -12,7 +15,9 @@ Event study:
   - Compare british vs non-british
 
 Output:
-  outputs/tables/regression_results.csv
+  outputs/tables/regression_results_v1.csv   (contemporaneous)
+  outputs/tables/regression_results_v2.csv   (lagged — primary)
+  outputs/tables/model_comparison.csv        (side-by-side key coefs)
   outputs/figures/event_study.png
   outputs/figures/hype_trajectories.png
 """
@@ -60,42 +65,86 @@ for nat in [1, 0]:
         print(f"  GA/90: mean={sub['ga_per90'].mean():.3f}, sd={sub['ga_per90'].std():.3f}")
 
 # ── 2. FIXED EFFECTS REGRESSION ──────────────────────────────────────────────
-print("\n=== Panel Fixed Effects Regression ===")
 
-# Create interaction term
-panel["hype_x_british"] = panel["hype_index_mean"] * panel["british"].fillna(0)
+def run_fe_model(panel_df, hype_col, label, out_csv):
+    """Run OLS with player + season FE, return key coefficients as DataFrame."""
+    interact_col = f"{hype_col}_x_british"
+    df = panel_df.copy()
 
-if HAS_STATSMODELS and "ga_per90" in panel.columns:
-    # Use C() for categorical fixed effects
-    formula = "ga_per90 ~ hype_index_mean + british + hype_x_british + C(player) + C(season)"
-    try:
-        model = smf.ols(formula, data=panel.dropna(subset=["ga_per90", "hype_index_mean", "british"])).fit()
-        print(model.summary2().tables[1][["Coef.", "Std.Err.", "t", "P>|t|"]].to_string())
-        # Save key coefficients
-        coefs = model.summary2().tables[1]
-        key = coefs[coefs.index.isin(["hype_index_mean", "british", "hype_x_british"])]
-        key.to_csv("outputs/tables/regression_results.csv")
-        print("\nKey coefficients saved: outputs/tables/regression_results.csv")
-    except Exception as e:
-        print(f"Regression error: {e}")
-else:
-    print("Manual within-transformation (demean by player and season):")
-    reg_df = panel.dropna(subset=["hype_index_mean", "british"]).copy()
-    if "ga_per90" in reg_df.columns:
-        reg_df = reg_df.dropna(subset=["ga_per90"])
-        for col in ["ga_per90", "hype_index_mean", "hype_x_british"]:
-            reg_df[f"{col}_dm"] = reg_df[col] - reg_df.groupby("player")[col].transform("mean")
-            reg_df[f"{col}_dm"] = reg_df[f"{col}_dm"] - reg_df.groupby("season")[f"{col}_dm"].transform("mean")
-        # Simple OLS on demeaned
+    if hype_col not in df.columns:
+        print(f"  [{label}] Column '{hype_col}' not found — skipping")
+        return None
+
+    df[interact_col] = df[hype_col] * df["british"].fillna(0)
+    required = ["ga_per90", hype_col, "british"]
+    df = df.dropna(subset=required)
+
+    if len(df) < 10:
+        print(f"  [{label}] Insufficient data after dropna ({len(df)} rows) — skipping")
+        return None
+
+    print(f"\n=== {label} | n={len(df)} player-seasons ===")
+
+    if HAS_STATSMODELS:
+        formula = f"ga_per90 ~ {hype_col} + british + {interact_col} + C(player) + C(season)"
+        try:
+            model = smf.ols(formula, data=df).fit()
+            coefs = model.summary2().tables[1]
+            print(coefs[["Coef.", "Std.Err.", "t", "P>|t|"]].to_string())
+            key = coefs[coefs.index.isin([hype_col, "british", interact_col])].copy()
+            key["model"] = label
+            key.to_csv(out_csv)
+            print(f"  Saved: {out_csv}")
+            return key
+        except Exception as e:
+            print(f"  Regression error: {e}")
+            return None
+    else:
+        print("  Manual within-transformation (demean by player and season):")
+        for col in ["ga_per90", hype_col, interact_col]:
+            df[f"{col}_dm"] = df[col] - df.groupby("player")[col].transform("mean")
+            df[f"{col}_dm"] -= df.groupby("season")[f"{col}_dm"].transform("mean")
         from numpy.linalg import lstsq
-        X = reg_df[["hype_index_mean_dm", "hype_x_british_dm"]].values
+        X = df[[f"{hype_col}_dm", f"{interact_col}_dm"]].values
         X = np.hstack([np.ones((len(X), 1)), X])
-        y = reg_df["ga_per90_dm"].values
+        y = df["ga_per90_dm"].values
         coef, _, _, _ = lstsq(X, y, rcond=None)
-        print(f"  Intercept:          {coef[0]:.4f}")
-        print(f"  hype_index_mean:    {coef[1]:.4f}")
-        print(f"  hype × british:     {coef[2]:.4f}")
-        print("  (Note: SEs not computed in manual mode — install statsmodels for full output)")
+        print(f"  Intercept:        {coef[0]:.4f}")
+        print(f"  {hype_col}:  {coef[1]:.4f}")
+        print(f"  hype × british:   {coef[2]:.4f}")
+        print("  (SEs unavailable in manual mode — install statsmodels for full output)")
+        return None
+
+# V1 — Contemporaneous (baseline, likely reverse-causal)
+print("\n" + "="*60)
+print("V1: CONTEMPORANEOUS HYPE (baseline)")
+print("="*60)
+key_v1 = run_fe_model(panel, "hype_index_mean", "V1_Contemporaneous",
+                       "outputs/tables/regression_results_v1.csv")
+
+# V2 — Lagged (primary causal model)
+print("\n" + "="*60)
+print("V2: LAGGED HYPE — primary causal model")
+print("    (prior-season hype → this-season performance)")
+print("="*60)
+key_v2 = run_fe_model(panel, "hype_lag1", "V2_Lagged",
+                       "outputs/tables/regression_results_v2.csv")
+
+# Side-by-side comparison
+if key_v1 is not None and key_v2 is not None:
+    comparison = pd.concat([key_v1, key_v2])
+    comparison.to_csv("outputs/tables/model_comparison.csv")
+    print("\n=== Model Comparison (key coefficients) ===")
+    print(comparison[["Coef.", "P>|t|", "model"]].to_string())
+    print("Saved: outputs/tables/model_comparison.csv")
+elif key_v2 is not None:
+    print("\n=== V2 Lagged Results (primary model) ===")
+    print(key_v2[["Coef.", "Std.Err.", "P>|t|"]].to_string())
+
+print("\nInterpretation guide:")
+print("  V1 hype_index_mean coef: contemporaneous association (likely inflated by reverse causality)")
+print("  V2 hype_lag1 coef:       lagged effect — causal interpretation defensible")
+print("  If V2 < V1 or becomes insignificant: confirms reverse causality was driving V1")
 
 # ── 3. HYPE TRAJECTORY PLOT ───────────────────────────────────────────────────
 print("\n=== Plotting hype trajectories ===")

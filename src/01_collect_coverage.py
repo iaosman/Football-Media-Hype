@@ -1,13 +1,19 @@
 import requests, pandas as pd, json, os, time
 from pathlib import Path
 
-GUARDIAN_KEY = "b81b0c08-c76b-4760-b730-df6743e6c28c"
+GUARDIAN_KEY = os.environ.get("GUARDIAN_KEY", "")
+if not GUARDIAN_KEY:
+    raise EnvironmentError(
+        "Set GUARDIAN_KEY before running.\n"
+        "Free key from https://open-platform.theguardian.com/access/\n"
+        "Then: export GUARDIAN_KEY=your-key-here"
+    )
 BASE_URL = "https://content.guardianapis.com/search"
 
-path = "/Users/ibrahimosman/Downloads/football-media-hype/data/raw/player_population.csv"
+path = "data/raw/player_population.csv"
 df = pd.read_csv(path)
 
-out_dir = Path("/Users/ibrahimosman/Downloads/football-media-hype/data/raw/coverage")
+out_dir = Path("data/raw/coverage")
 out_dir.mkdir(parents=True, exist_ok=True)
 
 SEASONS = {
